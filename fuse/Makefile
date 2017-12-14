@@ -1,4 +1,10 @@
-obj-m := mma.o gread.o tinyfuse.o
+#
+# Makefile for the FUSE filesystem.
+# Standalone edition
+#
+
+obj-m := fuse.o
+fuse-y := dev.o dir.o
 
 KDIR    := /lib/modules/$(shell uname -r)/build
 PWD     := $(shell pwd)
