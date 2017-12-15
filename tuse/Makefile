@@ -4,7 +4,7 @@
 #
 
 obj-m := tuse.o
-tuse-y := dev.o dir.o file.o inode.o control.o xattr.o acl.o
+tuse-y := dev.o inode.o
 
 KDIR    := /lib/modules/$(shell uname -r)/build
 PWD     := $(shell pwd)

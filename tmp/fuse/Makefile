@@ -3,8 +3,8 @@
 # Standalone edition
 #
 
-obj-m := tuse.o
-tuse-y := dev.o dir.o file.o inode.o control.o xattr.o acl.o
+obj-m := fuse.o
+fuse-y := dev.o dir.o file.o inode.o control.o xattr.o acl.o
 
 KDIR    := /lib/modules/$(shell uname -r)/build
 PWD     := $(shell pwd)
