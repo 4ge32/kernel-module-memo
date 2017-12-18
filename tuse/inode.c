@@ -20,6 +20,7 @@ static struct kmem_cache *tuse_inode_cachep;
 
 struct tuse_mount_data {
 	int fd;
+	unsigned rootmode;
 	kuid_t user_id;
 	kgid_t group_id;
 	unsigned fd_present:1;
@@ -29,12 +30,17 @@ struct tuse_mount_data {
 	unsigned blksize;
 };
 
+
 enum {
 	OPT_FD,
 	OPT_USER_ID,
 	OPT_GROUP_ID,
 	OPT_ERR,
 };
+
+static struct inode *tuse_alloc_inode(struct super_block *sb) {
+	return NULL;
+}
 
 static const match_table_t tokens = {
 	{OPT_FD,     	"fd=%u"},
@@ -55,6 +61,91 @@ static int tuse_match_uint(substring_t *s, unsigned int *res)
 	return err;
 }
 
+static void tuse_init_inode(struct inode *inode, struct tuse_attr *attr)
+{
+	/*
+	 *  S_IFMT
+	 *  bit mask for the file type bit filed
+	 */
+	inode->i_mode = attr->mode & S_IFMT;
+	inode->i_size = attr->size;
+	if (S_ISREG(inode->i_mode)) {
+		tuse_init_common(inode);
+		tuse_init_file_inode(inode);
+	} else
+		BUG();
+}
+
+int tuse_inode_eq(struct inode *inode, void *_nodeidp)
+{
+	u64 nodeid = *(u64 *) _nodeidp;
+	if (get_node_id(inode) == nodeid)
+		return 1;
+	else
+		return 0;
+}
+
+static int tuse_inode_set(struct inode *inode, void *_nodeidp)
+{
+	u64 nodeid = *(u64 *) _nodeidp;
+	get_tuse_inode(inode)->nodeid = nodeid;
+	return 0;
+}
+
+void tuse_change_attributes(struct inode *inode, struct tuse_attr *attr,
+			    u64 attr_valid, u64 attr_version)
+{
+}
+
+struct inode *tuse_iget(struct super_block *sb, u64 nodeid,
+			int generation, struct tuse_attr *attr,
+			u64 attr_valid, u64 attr_version)
+{
+	struct inode *inode;
+	struct tuse_inode *ti;
+	struct tuse_conn *tc = get_tuse_conn_super(sb);
+
+	/*
+	 * obtain an inode from a mounted file system
+	 */
+	inode = iget5_locked(sb, nodeid, tuse_inode_eq, tuse_inode_set, &nodeid);
+	if (!inode)
+		return NULL;
+
+	/* new inodes set I_EW */
+	if ((inode->i_state & I_NEW)) {
+		/* Do not update access times */
+		inode->i_flags |= S_NOATIME;
+		if (!S_ISREG(attr->mode))
+			inode->i_flags |= S_NOCMTIME;
+		/* i_generation increment every get inode from sb */
+		inode->i_generation = generation;
+		tuse_init_inode(inode, attr);
+		/*
+		 * clear the I_NEW state and wake up any waiters
+		 * */
+		unlock_new_inode(inode);
+	}
+
+	ti = get_tuse_inode(inode);
+	spin_lock(&tc->lock);
+	ti->nlookup++;
+	spin_unlock(&tc->lock);
+	tuse_change_attributes(inode, attr, attr_valid, attr_version);
+
+	return inode;
+}
+
+static struct inode *tuse_get_root_inode(struct super_block *sb, unsigned mode)
+{
+	struct tuse_attr attr;
+	memset(&attr, 0, sizeof(attr));
+
+	attr.mode = mode;
+	attr.ino = TUSE_ROOT_ID;
+	attr.nlink = 1;
+	return tuse_iget(sb, 1, 0, &attr, 0, 0);
+}
 static int parse_tuse_opt(char *opt, struct tuse_mount_data *d, int is_dev)
 {
 	char *p;
@@ -156,11 +247,47 @@ struct tuse_dev *tuse_dev_alloc(struct tuse_conn *tc)
 	return tud;
 }
 
+void tuse_conn_put(struct tuse_conn *tc)
+{
+	if (atomic_dec_and_test(&tc->count)) {
+		if (tc->destroy_req)
+			tuse_request_free(tc->destroy_req);
+		tc->release(tc);
+	}
+}
+
+void tuse_dev_free(struct tuse_dev *tud)
+{
+	struct tuse_conn *tc = tud->tc;
+
+	if (tc) {
+		spin_lock(&tc->lock);
+		list_del(&tud->entry);
+		spin_unlock(&tc->lock);
+
+		tuse_conn_put(tc);
+	}
+	kfree(tud);
+}
+
+static void tuse_bdi_destroy(struct tuse_conn *tc)
+{
+}
+
+static int tuse_bdi_init(struct tuse_conn *tc, struct super_block *sb)
+{
+	return 0;
+}
+
 static int tuse_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct tuse_dev *tud;
 	struct tuse_conn *tc;
 	struct tuse_mount_data d;
+	struct inode *root;
+	struct file *file;
+	struct dentry *root_dentry;
+	struct tuse_req *init_req;
 	struct file *file;
 	int err;
 	/* struct block_device *s_bdev */
@@ -184,7 +311,7 @@ static int tuse_fill_super(struct super_block *sb, void *data, int silent)
 	}
 	sb->s_magic = TUSE_SUPER_MAGIC;
 	sb->s_op = &tuse_super_operations;
-	sb->s_xattr = tuse_xattr_handlers;
+	//sb->s_xattr = tuse_xattr_handlers;
 	/* Max file size */
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
 	/* Granularity of c/m/atime in ns */
@@ -208,6 +335,44 @@ static int tuse_fill_super(struct super_block *sb, void *data, int silent)
 	tc->release = tuse_free_conn;
 
 	tud = tuse_dev_alloc(tc);
+	if (!tud)
+		goto err_put_conn;
+
+	tc->dev = sb->s_dev;
+	tc->sb = sb;
+	err = tuse_bdi_init(tc, sb);
+	if (err)
+		goto err_dev_free;
+
+	sb->s_bdi = &tc->bdi;
+
+	/* root inode */
+	err = -ENOMEM;
+	root = tuse_get_root_inode(sb, d.rootmode);
+	sb->s_d_op = &tuse_root_dentry_operations;
+	root_dentry = d_make_root(root);
+	if (!root_dentry)
+		goto err_dev_free;
+	sb->s_d_op = &tuse_dentry_operations;
+	init_req = tuse_request_alloc(0);
+	if (!init_req)
+		goto err_put_root;
+	__set_bit(FR_BACKGROUND, &init_req->flags);
+
+	if (is_bdev) {
+		tc->destroy_req = tuse_request_alloc(0);
+		if (!tc->destroy_req)
+			goto err_free_init_req;
+	}
+err_free_init_req:
+	tuse_request_free(init_req);
+err_put_root:
+	dput(root_dentry);
+err_dev_free:
+	tuse_dev_free(tud);
+err_put_conn:
+	tuse_bdi_destroy(tc);
+	tuse_conn_put(tc);
 err_fput:
 	fput(file);
 err:
@@ -306,7 +471,13 @@ static int __init tuse_fs_init(void)
 	if (err)
 		goto err_register_blk;
 
+	err = register_filesystem(&tuse_fs_type);
+	if (err)
+		goto err_register_fs;
+
 	return 0;
+err_register_fs:
+	unregister_tuseblk();
 err_register_blk:
 	kmem_cache_destroy(tuse_inode_cachep);
 out:
