@@ -14,6 +14,25 @@ extern const struct file_operations tuse_dev_operations;
 extern const struct dentry_operations tuse_root_dentry_operations;
 extern const struct dentry_operations tuse_dentry_operations;
 
+enum fuse_opcode {
+	FUSE_SETXATTR = 4,
+};
+
+struct tuse_in_header {
+	uint32_t len;
+	uint32_t opcode;
+	uint64_t nodeid;
+	uint64_t uid;
+	uint64_t gid;
+	uint64_t pid;
+};
+
+struct tuse_out_header {
+	uint32_t len;
+	int32_t error;
+	uint64_t unique;
+};
+
 /**
  * Request flags
  *
@@ -67,9 +86,25 @@ struct tuse_inode {
 	 * Number of lookups on this inode
 	 */
 	u64 nlookup;
+
+	/** 64 bit inode number */
+	u64 orig_ino;
+};
+
+/*  */
+struct tuse_in {
+	/* The request header */
+	struct tuse_in_header h;
+};
+
+/* The request output */
+struct tuse_out {
+	/* The request header */
+	struct tuse_out_header h;
 };
 
 struct tuse_iqueue {
+	/* connection established */
 	unsigned connected;
 
 	/* The list of pending requests */
@@ -88,22 +123,40 @@ struct tuse_req {
 	/** This can be on either pending processing or io lists in
 	    fuse_conn */
 	struct list_head list;
+
 	/** Entry on the interrupts list  */
 	struct list_head intr_entry;
+
+	/* The request input */
+	struct tuse_in in;
+
+	/* The request output */
+	struct tuse_out out;
+
 	/* page vetor */
 	struct page **pages;
+
 	/* page-descriptor vector */
 	struct tuse_page_desc *page_descs;
+
 	/** inline page-descriptor vector */
 	struct tuse_page_desc inline_page_descs[TUSE_REQ_INLINE_PAGES];
+
 	/** inline page-descriptor vector */
 	struct page *inline_pages[1];
+
 	/** Used to wake up the task waiting for completion of request*/
 	wait_queue_head_t waitq;
+
 	/** refcount */
 	atomic_t count;
+
 	/** size of the 'pages' array */
 	unsigned max_pages;
+
+	/** Request completion callback */
+	//void (*end)(struct tuse_conn *, struct tuse_req *);
+
 	/* Request flags, updated with test/set/clear_bit() */
 	unsigned long flags;
 };
@@ -156,8 +209,25 @@ struct tuse_conn {
 
 };
 
+struct tuse_pqueue {
+	/** Connection established */
+	unsigned connected;
+
+	/** Lock protecting accessess to  members of this structure */
+	spinlock_t lock;
+
+	/** The list of requests being processed */
+	struct list_head processing;
+
+	/** The list of requests under I/O */
+	struct list_head io;
+};
+
 struct tuse_dev {
 	struct tuse_conn *tc;
+
+	/** Processing queue */
+	struct tuse_pqueue pq;
 
 	struct list_head entry;
 };

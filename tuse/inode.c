@@ -38,10 +38,6 @@ enum {
 	OPT_ERR,
 };
 
-static struct inode *tuse_alloc_inode(struct super_block *sb) {
-	return NULL;
-}
-
 static const match_table_t tokens = {
 	{OPT_FD,     	"fd=%u"},
 	{OPT_USER_ID, 	"user_id=%u"},
@@ -146,6 +142,26 @@ static struct inode *tuse_get_root_inode(struct super_block *sb, unsigned mode)
 	attr.nlink = 1;
 	return tuse_iget(sb, 1, 0, &attr, 0, 0);
 }
+
+static struct inode *tuse_alloc_inode(struct super_block *sb)
+{
+	struct inode *inode;
+	struct tuse_inode *ti;
+
+	inode = kmem_cache_alloc(tuse_inode_cachep, GFP_KERNEL);
+	if (!inode)
+		return NULL;
+
+	ti = get_tuse_inode(inode);
+	ti->orig_ino = 0;
+
+	return inode;
+}
+
+static const struct super_operations tuse_super_operations = {
+	.alloc_inode  = tuse_alloc_inode,
+};
+
 static int parse_tuse_opt(char *opt, struct tuse_mount_data *d, int is_dev)
 {
 	char *p;
@@ -195,10 +211,6 @@ static int parse_tuse_opt(char *opt, struct tuse_mount_data *d, int is_dev)
 
 	return 1;
 }
-
-static const struct super_operations tuse_super_operations = {
-	.alloc_inode  = tuse_alloc_inode,
-};
 
 static void tuse_iqueue_init(struct tuse_iqueue *tiq)
 {
@@ -279,13 +291,16 @@ static int tuse_bdi_init(struct tuse_conn *tc, struct super_block *sb)
 	return 0;
 }
 
+static void tuse_send_init(struct tuse_conn *tc, struct tuse_req *req)
+{
+}
+
 static int tuse_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct tuse_dev *tud;
 	struct tuse_conn *tc;
 	struct tuse_mount_data d;
 	struct inode *root;
-	struct file *file;
 	struct dentry *root_dentry;
 	struct tuse_req *init_req;
 	struct file *file;
@@ -364,6 +379,11 @@ static int tuse_fill_super(struct super_block *sb, void *data, int silent)
 		if (!tc->destroy_req)
 			goto err_free_init_req;
 	}
+
+	tuse_send_init(tc, init_req);
+
+	return 0;
+
 err_free_init_req:
 	tuse_request_free(init_req);
 err_put_root:
@@ -376,7 +396,7 @@ err_put_conn:
 err_fput:
 	fput(file);
 err:
-	return 0;
+	return err;
 }
 
 static struct dentry *tuse_mount(struct file_system_type *fs_type,
@@ -467,19 +487,25 @@ static int __init tuse_fs_init(void)
 	if (!tuse_inode_cachep)
 		goto out;
 
+	/*
 	err = register_tuseblk();
 	if (err)
 		goto err_register_blk;
+		*/
 
 	err = register_filesystem(&tuse_fs_type);
 	if (err)
 		goto err_register_fs;
 
 	return 0;
+
 err_register_fs:
-	unregister_tuseblk();
+	kmem_cache_destroy(tuse_inode_cachep);
+	//unregister_tuseblk();
+	/*
 err_register_blk:
 	kmem_cache_destroy(tuse_inode_cachep);
+	*/
 out:
 	return err;
 }
