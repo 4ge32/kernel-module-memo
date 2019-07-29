@@ -1,4 +1,5 @@
 // get_user_page example
+// Linux localhost.localdomain 5.1.6-200.fc29.x86_64
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/fs.h>
