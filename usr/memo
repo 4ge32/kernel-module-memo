@@ -1,8 +1,0 @@
-# insmod simple_device_driver2.ko
-# cat /proc/devices | grep kure
-246 kuredev
-# mknod -m 666 /dev/kuredev c 246 0
-# echo kure > /dev/kuredev
-# cat /dev/kuredev
-kure
-sudo mknod -m 666 /dev/mmap_example c 245 0 
