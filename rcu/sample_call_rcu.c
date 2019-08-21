@@ -1,5 +1,5 @@
-/* TODO:
- * Is there memory leak?
+/* The sample of call_rcu
+ * My updating thread cannot block - using call_rcu
  */
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -13,10 +13,18 @@ struct foo {
 	int a;
 	char b;
 	long c;
+	struct rcu_head rcu;
 };
 DEFINE_SPINLOCK(foo_mutex);
 
 struct foo __rcu *gbl_foo;
+
+static void foo_reclaim(struct rcu_head *p)
+{
+	struct foo *fp = container_of(p, struct foo, rcu);
+	pr_info("RECLAIM!\n");
+	kfree(fp);
+}
 
 /*
  * Create a new struct foo that is the same as the one currently
@@ -27,9 +35,9 @@ struct foo __rcu *gbl_foo;
  * Uses rcu_assign_pointer() to ensure that concurrent readers
  * see the initialized version of the new structure.
  *
- * Uses synchronize_rcu() to ensure that any readers that might
- * have references to the old structure complete before freeing
- * the old structure.
+ * Uses call_rcu() to ensure that any readers that might have
+ * references to the old structure complete before freeing the
+ * old structures.
  */
 void foo_update_a(int new_a)
 {
@@ -54,8 +62,16 @@ void foo_update_a(int new_a)
 	 * Note that synchronoize_rcu() will -not- necessarily wait for
 	 * any subsequent RCU read-side critical sections to complete.
 	 */
-	synchronize_rcu();
-	kfree(old_fp);
+
+	/*
+	 * If the callback for call_rcu() is not doing anything
+	 * more than calling kfree() on the structure, we can
+	 * kfree_rcu instead of call_rcu to avoid having
+	 * to write our own callback.
+	 *
+	 * kfree_rcu(old_fp, rcu);
+	 */
+	call_rcu(&old_fp->rcu, foo_reclaim);
 
 	//END_THREAD;
 }
@@ -95,7 +111,7 @@ static int kthread_reader(void *arg)
 		int seed;
 		int val;
 
-		seed = get_random_int() % 3 + 1;
+		seed = get_random_int() % 2 + 1;
 
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule_timeout(seed * HZ);
@@ -124,7 +140,7 @@ static int kthread_writer(void *arg)
 		val = get_random_int() % 100;
 
 		set_current_state(TASK_INTERRUPTIBLE);
-		schedule_timeout(1 * HZ);
+		schedule_timeout(3 * HZ);
 
 		START_THREAD;
 
