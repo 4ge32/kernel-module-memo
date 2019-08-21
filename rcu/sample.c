@@ -47,6 +47,13 @@ void foo_update_a(int new_a)
 	rcu_assign_pointer(gbl_foo, new_fp);
 	spin_unlock(&foo_mutex);
 
+	/*
+	 * Marks the end of updater code and the beginning of reclaimer code.
+	 * It does this by blocking until all pre-existing RCU read-side
+	 * critical sections on all CPUs have completed.
+	 * Note that synchronoize_rcu() will -not- necessarily wait for
+	 * any subsequent RCU read-side critical sections to complete.
+	 */
 	synchronize_rcu();
 	kfree(old_fp);
 
@@ -76,56 +83,56 @@ int foo_get_a(void)
 }
 
 #define NUM_WRITER_THREADS 1
-#define NUM_READER_THREADS 5
+#define NUM_READER_THREADS 10
 #define NUM_THREADS (NUM_WRITER_THREADS + NUM_READER_THREADS)
 
 static struct task_struct *k[NUM_THREADS];
 
-static void kthread_reader_main(void)
-{
-	int seed;
-	int val;
-
-	seed = get_random_int() % 3 + 1;
-
-	set_current_state(TASK_INTERRUPTIBLE);
-	schedule_timeout(seed * HZ);
-
-	START_THREAD;
-
-	val = foo_get_a();
-	pr_info("READER-%d:%d(%ld)\n", current->pid, val, jiffies);
-
-	END_THREAD;
-}
-
 static int kthread_reader(void *arg)
 {
+	void kthread_reader_main(void)
+	{
+		int seed;
+		int val;
+
+		seed = get_random_int() % 3 + 1;
+
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule_timeout(seed * HZ);
+
+		START_THREAD;
+
+		val = foo_get_a();
+		pr_info("READER-%d:%d(%ld)\n", current->pid, val, jiffies);
+
+		END_THREAD;
+	}
+
 	while (!kthread_should_stop())
 		kthread_reader_main();
 
 	return 0;
 }
 
-static void kthread_writer_main(void)
-{
-	int val;
-
-	val = get_random_int() % 100;
-
-	set_current_state(TASK_INTERRUPTIBLE);
-	schedule_timeout(1 * HZ);
-
-	START_THREAD;
-
-	pr_info("WRITER-%d:%d(%ld)\n", current->pid, val, jiffies);
-	foo_update_a(val);
-
-	END_THREAD;
-}
 
 static int kthread_writer(void *arg)
 {
+	void kthread_writer_main(void)
+	{
+		int val;
+
+		val = get_random_int() % 100;
+
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule_timeout(1 * HZ);
+
+		START_THREAD;
+
+		pr_info("WRITER-%d:%d(%ld)\n", current->pid, val, jiffies);
+		foo_update_a(val);
+
+		END_THREAD;
+	}
 	while (!kthread_should_stop())
 		kthread_writer_main();
 
@@ -197,12 +204,14 @@ out:
 static void __exit exit_sample_(void)
 {
 	int i;
+
 	for (i = 0; i < NUM_THREADS; i++)
 		kthread_stop(k[i]);
 
 	kfree(gbl_foo);
 
-	pr_info("--- RCU sample stop ---\n");
+
+	pr_info("--- RCU sample stop %d---\n", i);
 }
 
 MODULE_AUTHOR("Fumiya Shigemitsu");
