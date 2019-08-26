@@ -210,7 +210,6 @@ static void __exit exit_sample_(void)
 
 	kfree(gbl_foo);
 
-
 	pr_info("--- RCU sample stop %d---\n", i);
 }
 
